@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import math
-from einops import einsum as einsum
+from einops import einsum
 
 
 class Linear(nn.Module):

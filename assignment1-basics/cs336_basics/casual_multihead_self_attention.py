@@ -39,6 +39,11 @@ class CasualMultiHeadSelfAttention(nn.Module):
         K = self.w_k.forward(x)
         V = self.w_v.forward(x)
 
+        seq_len = x.shape[-2]
+        token_positions = (
+            token_positions if token_positions else torch.arange(0, seq_len)
+        )
+
         # 2. split d_model of Q K V to (num_heads, d_k) and move num_heads to the front of seq_len
         new_Q = rearrange(
             Q,
@@ -57,11 +62,6 @@ class CasualMultiHeadSelfAttention(nn.Module):
         )
 
         # 3. rope Q K
-
-        # 3.1 generate token_positions
-        seq_len = x.shape[-2]
-        if token_positions is None:
-            token_positions = torch.arange(0, seq_len)
 
         if self.rope is not None:
             new_Q = self.rope.forward(new_Q, token_positions)

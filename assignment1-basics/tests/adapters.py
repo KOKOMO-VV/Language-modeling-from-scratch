@@ -17,6 +17,8 @@ from cs336_basics.transformer_swiglu import SwiGLU
 from cs336_basics.transformer_rope import RoPE
 from cs336_basics.transformer_attention import softmax, scaled_dot_product_attention
 from cs336_basics.casual_multihead_self_attention import CasualMultiHeadSelfAttention
+from cs336_basics.transformer_block import TransformerBlock
+from cs336_basics.transformer_lm import TransformerLM
 
 
 def run_linear(
@@ -303,7 +305,17 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    block = TransformerBlock(d_model, num_heads, d_ff, theta, max_seq_len)
+    block.ffn.w1.weight.data = weights["ffn.w1.weight"]
+    block.ffn.w2.weight.data = weights["ffn.w2.weight"]
+    block.ffn.w3.weight.data = weights["ffn.w3.weight"]
+    block.attention.w_q.weight.data = weights["attn.q_proj.weight"]
+    block.attention.w_k.weight.data = weights["attn.k_proj.weight"]
+    block.attention.w_v.weight.data = weights["attn.v_proj.weight"]
+    block.attention.w_o.weight.data = weights["attn.output_proj.weight"]
+    block.norm1.gain.data = weights["ln1.weight"]
+    block.norm2.gain.data = weights["ln2.weight"]
+    return block.forward(in_features)
 
 
 def run_transformer_lm(
@@ -385,7 +397,37 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    transformer_lm = TransformerLM(
+        vocab_size, context_length, num_layers, d_model, num_heads, d_ff, rope_theta
+    )
+    transformer_lm.token_embeddings.weight.data = weights["token_embeddings.weight"]
+    for i in range(num_layers):
+        transformer_lm.layers[i].ffn.w1.weight.data = weights[
+            f"layers.{i}.ffn.w1.weight"
+        ]
+        transformer_lm.layers[i].ffn.w2.weight.data = weights[
+            f"layers.{i}.ffn.w2.weight"
+        ]
+        transformer_lm.layers[i].ffn.w3.weight.data = weights[
+            f"layers.{i}.ffn.w3.weight"
+        ]
+        transformer_lm.layers[i].attention.w_q.weight.data = weights[
+            f"layers.{i}.attn.q_proj.weight"
+        ]
+        transformer_lm.layers[i].attention.w_k.weight.data = weights[
+            f"layers.{i}.attn.k_proj.weight"
+        ]
+        transformer_lm.layers[i].attention.w_v.weight.data = weights[
+            f"layers.{i}.attn.v_proj.weight"
+        ]
+        transformer_lm.layers[i].attention.w_o.weight.data = weights[
+            f"layers.{i}.attn.output_proj.weight"
+        ]
+        transformer_lm.layers[i].norm1.gain.data = weights[f"layers.{i}.ln1.weight"]
+        transformer_lm.layers[i].norm2.gain.data = weights[f"layers.{i}.ln2.weight"]
+    transformer_lm.ln_final.gain.data = weights["ln_final.weight"]
+    transformer_lm.lm_head.weight.data = weights["lm_head.weight"]
+    return transformer_lm.forward(in_indices)
 
 
 def run_rmsnorm(

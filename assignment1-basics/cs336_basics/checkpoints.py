@@ -14,6 +14,13 @@ def save_checkpoint(
         "model_dict": model.state_dict(),
         "optimizer_dict": optimizer.state_dict(),
         "iteration": iteration,
+        "vocab_size": model.vocab_size,
+        "context_length": model.context_length,
+        "num_layers": model.num_layers,
+        "d_model": model.d_model,
+        "num_heads": model.num_heads,
+        "d_ff": model.d_ff,
+        "theta": model.theta,
     }
     torch.save(obj, out)
 

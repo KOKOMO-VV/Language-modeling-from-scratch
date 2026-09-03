@@ -27,6 +27,13 @@ class TransformerLM(nn.Module):
         )
         self.ln_final = RMSnorm(d_model, device=None, dtype=None)
         self.lm_head = Linear(d_model, vocab_size, device=None, dtype=None)
+        self.d_model = d_model
+        self.vocab_size = vocab_size
+        self.context_length = context_length
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.theta = theta
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         temp_result = self.token_embeddings(token_ids)

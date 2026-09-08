@@ -1,4 +1,5 @@
 import numpy
+import torch
 from .get_batch import get_batch
 import argparse
 from .transformer_lm import TransformerLM
@@ -6,10 +7,37 @@ from .cross_entropy import cross_entropy
 from .adam_w import AdamW
 from .sgd import lr_cosine_schedule, gradient_clipping
 from .checkpoints import save_checkpoint, load_checkpoint
+import time
+import csv
+
+
+def evaluate(model, val_dataset, num_batches, batch_size, context_length, device):
+    model.eval()  # Set the model to evaluation mode
+    total_loss = 0.0
+
+    with torch.no_grad():  # Disable gradient computation for evaluation
+        for _ in range(num_batches):
+            x_batch, y_batch = get_batch(
+                val_dataset,
+                batch_size=batch_size,
+                context_length=context_length,
+                device=device,
+            )
+            output = model(x_batch)
+            loss = cross_entropy(output, y_batch)
+            total_loss += loss.item()
+
+    average_loss = total_loss / num_batches
+    model.train()  # Set the model back to training mode
+    return average_loss
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--filename", type=str, required=True, help="Path to the memmap file"
+)
+parser.add_argument(
+    "--val_filename", type=str, required=True, help="Path to the memmap validation file"
 )
 parser.add_argument(
     "--dtype", type=str, required=True, help="Data type of the memmap file"
@@ -103,15 +131,16 @@ adamw_optimizer = AdamW(
 src = arg.checkpoint
 
 dataset = numpy.memmap(filename=arg.filename, dtype=arg.dtype, mode=arg.mode)
+val_dataset = numpy.memmap(filename=arg.val_filename, dtype=arg.dtype, mode=arg.mode)
 iteration = 0
-
+history = []
 # Load checkpoint if provided
 if src is not None:
     iteration = load_checkpoint(
         src=src, model=transformer_lm, optimizer=adamw_optimizer
     )
     print(f"Loaded checkpoint from {src} at iteration {iteration}")
-
+start = time.time()
 while iteration < arg.total_steps:
     # 1. Get a batch of data
     x_batch, y_batch = get_batch(
@@ -154,4 +183,19 @@ while iteration < arg.total_steps:
             out=f"checkpoint_{iteration}.pt",
         )
         print(f"Iteration: {iteration}, Loss: {loss.item()}, Learning Rate: {lr}")
+        duration = time.time() - start
+        average_loss = evaluate(
+            transformer_lm,
+            val_dataset,
+            num_batches=10,
+            batch_size=arg.batch_size,
+            context_length=arg.context_length,
+            device=arg.device,
+        )
+        history.append((iteration, duration, average_loss, lr))
     iteration += 1
+
+with open("training_history.txt", "w") as f:
+    writer = csv.writer(f)
+    writer.writerow(["Iteration", "Duration", "Average Loss", "Learning Rate"])
+    writer.writerows(history)

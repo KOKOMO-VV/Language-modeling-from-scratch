@@ -181,7 +181,7 @@ while iteration < arg.total_steps:
     gradient_clipping(transformer_lm.parameters(), l_max=arg.max_grad_norm)
 
     adamw_optimizer.step()
-    if iteration % 1 == 0:
+    if iteration % 5 == 0:
         save_checkpoint(
             model=transformer_lm,
             optimizer=adamw_optimizer,

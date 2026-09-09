@@ -14,7 +14,11 @@ parser.add_argument(
     "--merges_filepath", type=str, required=True, help="Path to the merges file"
 )
 parser.add_argument(
-    "--special_tokens", type=list[str], required=True, help="List of special tokens"
+    "--special_tokens",
+    type=str,
+    nargs="+",
+    required=True,
+    help="List of special tokens",
 )
 parser.add_argument(
     "--checkpoints_src", type=str, required=True, help="Path to the checkpoint file"
@@ -75,15 +79,27 @@ def decoding(prompt: str):
         softmax_logits = torch.exp(new_logits) / torch.sum(
             torch.exp(new_logits), dim=-1, keepdim=True
         )
-        softmax_logits_clipping = torch.where(
-            softmax_logits > args.probability_limit, softmax_logits, torch.tensor(0.0)
+        sorted_softmax_logits, sorted_indices = torch.sort(
+            softmax_logits, descending=True
         )
-        next_token_id = torch.multinomial(softmax_logits_clipping, num_samples=1).item()
+        cumsum_x = torch.cumsum(sorted_softmax_logits, dim=-1)
+        # 3. 找出超过阈值的布尔掩码
+        # 结果为: [False, False, True, True, True]
+        mask = cumsum_x >= args.probability_limit
+        if mask.any():
+            cutoff_index = torch.argmax(mask.int()).item()
+            # 4. 将超过阈值的元素设置为0
+            softmax_logits_clipping = sorted_softmax_logits.clone()
+            softmax_logits_clipping[cutoff_index + 1 :] = 0
+        else:
+            softmax_logits_clipping = sorted_softmax_logits.clone()
+
+        next_token_id = sorted_indices[
+            torch.multinomial(softmax_logits_clipping, num_samples=1).item()
+        ]
         if next_token_id == tokenizer.vocab_reverse[("<|endoftext|>".encode("utf-8"))]:
             break
-        token_ids = torch.cat(
-            (token_ids, torch.reshape(torch.tensor(next_token_id), (1, 1))), dim=-1
-        )
+        token_ids = torch.cat((token_ids, torch.reshape(next_token_id, (1, 1))), dim=-1)
         output = tokenizer.decode(token_ids.squeeze().tolist())
         iteration += 1
 

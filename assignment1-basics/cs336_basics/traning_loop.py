@@ -25,9 +25,9 @@ def evaluate(model, val_dataset, num_batches, batch_size, context_length, device
             )
             output = model(x_batch)
             loss = cross_entropy(output, y_batch)
-            total_loss += loss.item()
+            total_loss += loss
 
-    average_loss = total_loss / num_batches
+    average_loss = (total_loss / num_batches).item()  # Calculate the average loss
     model.train()  # Set the model back to training mode
     return average_loss
 
@@ -120,6 +120,8 @@ transformer_lm = TransformerLM(
     num_heads=arg.num_heads,
     d_ff=arg.d_ff,
 )
+transformer_lm = transformer_lm.to(torch.device(arg.device))
+
 adamw_optimizer = AdamW(
     params=transformer_lm.parameters(),
     lr=arg.learning_rate,
@@ -149,10 +151,14 @@ while iteration < arg.total_steps:
         context_length=arg.context_length,
         device=arg.device,
     )
+    batch_time = time.time() - start
+    print("Batch time:", batch_time)
 
     # 2. forward the transformer model
     output = transformer_lm(x_batch)
 
+    transform_time = time.time() - start
+    print("Transform time:", transform_time)
     # 3. clear grad
     adamw_optimizer.zero_grad()
 
@@ -175,7 +181,7 @@ while iteration < arg.total_steps:
     gradient_clipping(transformer_lm.parameters(), l_max=arg.max_grad_norm)
 
     adamw_optimizer.step()
-    if iteration % 100 == 0:
+    if iteration % 1 == 0:
         save_checkpoint(
             model=transformer_lm,
             optimizer=adamw_optimizer,
@@ -187,13 +193,15 @@ while iteration < arg.total_steps:
         average_loss = evaluate(
             transformer_lm,
             val_dataset,
-            num_batches=10,
+            num_batches=5,
             batch_size=arg.batch_size,
             context_length=arg.context_length,
             device=arg.device,
         )
         history.append((iteration, duration, average_loss, lr))
     iteration += 1
+    step_time = time.time() - start
+    print("Step time:", step_time)
 
 with open("training_history.txt", "w") as f:
     writer = csv.writer(f)

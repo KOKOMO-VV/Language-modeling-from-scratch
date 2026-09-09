@@ -40,16 +40,21 @@ def lr_cosine_schedule(t, a_max, a_min, t_w, t_c):
 def gradient_clipping(params, l_max):
     eps = 1e-6
     total_norm = 0.0
-    for p in params:
-        if p.grad is not None:
-            total_norm += (p.grad.data**2).sum().item()
-    total_norm = math.sqrt(total_norm)
+    # for p in params:
+    #     if p.grad is not None:
+    #         total_norm += (p.grad.data**2).sum()
+    grads = [p.grad.data for p in params if p.grad is not None]
+    total_norm = math.sqrt(
+        torch.stack([p.sum() for p in torch._foreach_mul(grads, grads)]).sum().item()
+    )
+    print("total_norm: ", total_norm)
     if total_norm < l_max:
         return
     else:
-        for p in params:
-            if p.grad is not None:
-                p.grad.data = (l_max / (total_norm + eps)) * p.grad.data
+        torch._foreach_mul_(grads, l_max / (total_norm + eps))
+        # for p in params:
+        #     if p.grad is not None:
+        #         p.grad.data = (l_max / (total_norm + eps)) * p.grad.data
 
 
 # weights = torch.nn.Parameter(5 * torch.randn((10, 10)))

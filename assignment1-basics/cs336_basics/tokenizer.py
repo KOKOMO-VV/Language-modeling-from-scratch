@@ -103,7 +103,7 @@ class Tokenizer:
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
         """
-        Given an iterable of strings (e.g., a Python file handle), return a generator that lazily yields token IDs. This is
+        Given an iterable of strings (e.g., a Python file handle), return a generator that lazily yields results. This is
         required for memory-efficient tokenization of large files that we cannot directly load into memory.
         """
         # set buffer size

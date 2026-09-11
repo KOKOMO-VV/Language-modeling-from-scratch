@@ -4,7 +4,7 @@ Notes based on my personal experience working through Stanford CS336's Assignmen
 
 ## 1. Tokenizer
 
-#### 1.1 Why need Tokenizer
+#### 1.1 Why do we need Tokenizer
 
 - Serves as the tool that converts natural language into a machine-readable representation the model can process.
 - Converts the machine-generated representation back into natural language to present the result to the user.
@@ -24,8 +24,10 @@ Notes based on my personal experience working through Stanford CS336's Assignmen
 Byte pair encoding (BPE) is a data compression and tokenization algorithm that iteratively merges the **most frequent pairs** of bytes or subwords in a text sequence
 
 - Working process:
-
+<div align="center">
   <img src="png/bpe_algorithm_steps.png" alt="bpe_algorithm_steps" style="zoom:30%;" />
+  <p>Figure 1: BPE Algorithm steps</p>
+</div>
 
 - Reasons:
 
@@ -40,8 +42,10 @@ Byte pair encoding (BPE) is a data compression and tokenization algorithm that i
   - The cutoff point for the buffer can't be arbitrary, though: if the buffer happens to be cut off in the middle of a word or in the middle of a special token, that word or token would incorrectly get split across two separate encoding calls, corrupting the result. So once the buffer reaches its target length, the code checks whether the last character is a letter, a digit, or a prefix fragment of a special token — if so, it keeps extending the buffer further until **it reaches a safe boundary to cut at.**
   - To achieve this "read a chunk, encode it, yield it" behavior, `encode_iterable` uses `yield from` to emit the token ids produced from each buffer chunk one at a time, rather than accumulating everything into one large list and returning it all at once — this lets the **caller start consuming results while the rest of the file is still being processed.**
   - At the level above, `create_token_id` also wraps its call to `encode_iterable` in a `yield from`. The purpose here is different: it isn't about producing ids one at a time (that's already handled inside `encode_iterable`) — it's about making `create_token_id` itself a lazily-evaluated generator, so that the setup work inside it (such as constructing the `Tokenizer`) only **actually runs once something downstream starts pulling values** (for example, the first internal `next()` call inside `np.fromiter`), rather than running immediately the moment `create_token_id(...)` is called.
-
+<div align="center">
 <img src="png/streaming_buffer_and_lazy_generator.png" alt="streaming_buffer_and_lazy_generator" style="zoom:30%;" />
+<p>Figure 2: Streaming buffer and lazy generator</p>
+</div>
 
 - **Preparation 2: Handling semantic boundaries (special tokens and pre-tokenization)**
 
@@ -57,8 +61,10 @@ Byte pair encoding (BPE) is a data compression and tokenization algorithm that i
   -  The overall idea behind building the vocabulary is "start from the smallest units, then repeatedly merge by statistical frequency." First, every word in the corpus is not handled as a string at all — it's **converted into a tuple of individual bytes**. The reason for starting from single bytes is that the 256 byte values form a naturally finite set that can nonetheless cover any Unicode text, which is what fundamentally guarantees that any input can be represented no matter what.
   -  On top of that, the construction process maintains three interrelated data structures: `byte_words` records each byte tuple and how often it occurs in the corpus; `pair_frequent_table` records the total weighted frequency of every adjacent byte pair; and `reverse_index_table` records, for each byte pair, which byte tuples contain it. The first two are statistics; the third is a reverse index — extra space deliberately spent in exchange for speed.
   -  Each merge round proceeds as follows: take the highest-frequency byte pair from `pair_frequent_table`, then use `reverse_index_table` to jump straight to the words containing that pair, and for each such word perform the merge while updating all three structures in step. In `byte_words`, the old tuple key is deleted and the merged tuple is inserted as a new key. In `pair_frequent_table`, the pairs that previously sat on either side of the merge point — along with the merged pair itself — have this word's frequency subtracted, while the pairs newly formed around the merged token have that frequency added. In `reverse_index_table`, the old tuple is removed from the sets of all its old byte pairs, and the new tuple is added to the sets of all its new byte pairs. Every byte pair that was touched is recorded, so that once the round finishes, entries whose count dropped to zero and entries whose word set became empty can be cleaned up in one pass. This whole process repeats until the vocabulary reaches its target size.
-
-  <img src="png/bpe_merge_full_pipeline.png" alt="bpe_merge_full_pipeline" style="zoom:30%;" />
+<div align="center">
+<img src="png/bpe_merge_full_pipeline.png" alt="bpe_merge_full_pipeline" style="zoom:30%;" />
+<p>Figure 3: BPE merge full pipeline</p>
+</div>
 
 ##### 1.2.4 Construction
 
@@ -73,6 +79,119 @@ This section is about how the building blocks prepared earlier get organized int
 - **Step 3: Generating token_ids** — `create_token_id` wraps the `Tokenizer` object from step 2, calling its `encode_iterable`, and itself uses `yield from` to stay fully lazy (matching the design from Preparation 1: nothing executes at call time, everything is deferred until values are actually pulled). The output of this step is a token id generator that can be fed directly into `np.fromiter`, ultimately written out as a `uint16` binary file — this is the endpoint of the entire tokenizer pipeline, and it's exactly the input data that gets read when training the transformer.
 
 ## 2. Transformer
+
+#### 2.1 Why do we need Transformer
+
+##### 2.1.1 Background
+
+- A language model's core task is next-token prediction: given a sequence of tokens, predict what comes next.
+- This task itself is architecture-agnostic — before Transformers, it was handled mainly by RNNs (and later their gated variants, LSTM and GRU).
+- Understanding why Transformers replaced RNNs requires first understanding the structural limitations that RNNs' processing method introduces.
+
+##### 2.1.2 Problems with RNNs
+
+- RNNs process sequences step by step: computing the hidden state at position t requires the hidden state at position t-1 to already be finished — no step can be skipped.
+- At each step, newly read information is squeezed into the same fixed-size hidden state vector, blending it with everything that came before.
+- This creates two distinct problems:
+  - Vanishing gradients: during backpropagation, the gradient must pass through as many multiplicative steps as there are positions between two tokens. If each step's derivative has magnitude less than 1, the gradient shrinks exponentially with distance, making it hard for RNNs to learn relationships between far-apart tokens.
+  - An information bottleneck: independent of training, all historical information must be compressed into the same fixed-dimension vector no matter how long the sequence gets, so earlier information is inevitably overwritten and diluted by later compression steps.
+
+##### 2.1.3 How Transformers solve both problems
+
+- Self-attention lets every position in the sequence keep its own representation independently, rather than forcing it into one shared vector.
+- Any two positions, no matter how far apart, can establish a direct connection in a single step, retrieving each other's original representation without passing through intermediate positions.
+  - This sidesteps the vanishing-gradient problem, since there's no long multiplicative chain to shrink through.
+  - It also sidesteps the information-bottleneck problem, since nothing is repeatedly compressed and overwritten.
+- Because the computation for every position (self-attention and every other layer) is a matrix operation performed simultaneously, with no "must wait for the previous position" dependency, the entire computation can be fully parallelized — training speed is no longer locked to sequence length, and more parallel compute directly translates into faster training.
+<div align="center">
+<img src="png/rnn_vs_transformer_comparison.png" alt="rnn_vs_transformer_comparison" style="zoom:30%;" />
+<p>Figure 4: RNN vs Transformer comparison</p>
+</div>
+#### 2.2 Steps to build a Transformer
+<div align="center">
+<img src="png/transformer_architecture_two_figures.png" alt="transformer_architecture_two_figures" style="zoom:30%;" />
+<p>Figure 5: Transformer architecture & A pre-norm Transformer block</p>
+</div>
+##### 2.2.1 Questions before starting
+
+- **On Embedding**
+  - Why do discrete token ids need to be converted into vectors at all, rather than feeding the raw integer id directly into the rest of the network?
+  - Why must the resulting vector's dimension, `d_model`, match the dimension used throughout attention and the FFN?
+- **On Attention**
+  - When predicting token t, why can't the model see token t+1 and beyond — what problem does the causal mask solve
+  - Why multi-head attention, rather than one larger single-head attention doing the same job?
+  - Self-attention itself is order-blind (as established in section 2.1) — specifically how does RoPE put that ordering information back in?
+- **On Norm**
+  - Why do deep networks need normalization at all? What training problem would show up if you simply stacked many layers of attention and FFN without it?
+  - Why is Norm applied separately before each sub-layer (attention, FFN), rather than once for the whole block?
+  - Why pre-norm (norm, then enter the sub-layer) rather than post-norm (enter the sub-layer, then norm)?
+- **On the FFN**
+  - Attention lets information flow between different positions — so what handles further processing of a single position's own information?
+  - Why does an FFN have to follow attention, and what's the division of labor between the two?
+- **On stacking layers**
+  - Why stack many attention+FFN blocks, rather than making a single block large enough (bigger `d_model` or `d_ff`) to achieve the same effect?
+  - What has to be true for a stack this deep to even be trainable in the first place — this ties back to the point in section 2.1 that residual connections are what solve vanishing gradients?
+- **On the final output**
+  - What form does the task of next-token prediction itself demand as output — why must it be a probability distribution rather than a single, definite token?
+  - Specifically, how does softmax satisfy that "must be a probability distribution" requirement?
+
+##### 2.2.2 PyTorch basic
+
+- **Tensor creation & shape operations**
+<div align="center">
+<img src="png/pytorch_shape_ops_table.png" alt="pytorch_shape_ops_table" style="zoom:50%;" />
+<p>Figure 6: Common tensor creation and shape operations in pytorch</p>
+</div>
+<div align="center">
+​	<img src="png/tensor_shape_ops_diagram.png" alt="tensor_shape_ops_diagram" style="zoom:30%;" />
+<p>Figure 7: Tensor shape operations diagram</p>
+</div>
+
+- **Elementwise operations, reduction & broadcasting**
+
+  Three different kinds of operations get combined constantly in tensor code, and it's worth being able to tell them apart at a glance. An **elementwise** operation (`x**2`, `torch.sqrt(...)`, `+`) applies the same computation to every entry independently and never changes the tensor's shape. A **reduction** (`.mean()`, `.sum()`, `.max()`, usually called with a `dim=` argument) collapses one or more dimensions down into a single value per remaining slice, which does change the shape. **Broadcasting** is the rule that lets tensors of *different* shapes still be combined elementwise, by implicitly stretching any dimension of size 1 to match its counterpart — without broadcasting, every operation would require both tensors to already have identical shapes.
+
+  A single line from RMSNorm shows all three working together:
+
+  ```python
+  RMS_a = torch.sqrt((x**2).mean(dim=-1, keepdim=True) + self.eps)
+  ```
+
+  `x**2` is elementwise, so it leaves the shape untouched. `.mean(dim=-1, keepdim=True)` is a reduction along the last dimension — this is where `d_model` disappears into a single averaged value per token. `+ self.eps` and `torch.sqrt(...)` are elementwise again, so the shape settles once `.mean()` has done its work and doesn't change after that.
+<div align="center">
+  <img src="png/rmsnorm_shape_broadcast_diagram.png" alt="rmsnorm_shape_broadcast_diagram" style="zoom:30%;" />
+<p>Figure 8: RMSNorm shape broadcast diagram</p>
+</div>
+- **Matrix / tensor multiplication**
+
+  `einsum` isn't something PyTorch invented — it comes from Einstein summation notation, and NumPy, native PyTorch (`torch.einsum`), and the `einops` library each provide their own implementation. Here we're using `einops`'s version, whose main difference from PyTorch's native one is readability: the native version labels dimensions with single letters (e.g. `"bhqd,bhkd->bhqk"`), while `einops` lets you label each dimension with a meaningful name instead (e.g. `"batch heads query d_k, batch heads key d_k -> batch heads query key"`), so you're not forced to keep a mental lookup table of what each letter means.
+
+  The problem `einsum` solves is this: whenever a matrix multiplication has to juggle several dimensions at once — some are "batch" dimensions that both sides keep untouched (like `batch`, `heads`), some are dimensions that get multiplied together and summed away (like `d_k`), and some belong to only one side but need to survive into the output (the query and key positions) — expressing that with plain `matmul` gets clunky fast, usually requiring you to manually `transpose`/`permute` things into alignment first. `einsum` lets you just write down what the inputs look like and what the output should look like, and it works out the alignment and summation for you.
+
+  Here's what that looks like in code:
+
+  ```python
+  from einops import einsum
+  
+  # Q: (batch, heads, query, d_k)
+  # K: (batch, heads, key,   d_k)
+  scores = einsum(
+      Q, K,
+      "batch heads query d_k, batch heads key d_k -> batch heads query key"
+  )
+  # scores: (batch, heads, query, key)
+  ```
+
+  The two halves before the arrow, separated by a comma, list the dimension names for `Q` and `K` respectively; the part after the arrow lists the dimension names of the output. `batch` and `heads` appear in both inputs and the output, so they're carried through unchanged. `query` belongs only to `Q`, `key` belongs only to `K`, and each survives into the output. Only `d_k` appears in both inputs but not after the arrow — that's the dimension that gets multiplied and summed away, which is exactly where the inner product of matrix multiplication happens.
+
+  The diagram lays this out as a grid: one column per dimension name, one row per tensor. `Q`'s row has cells under `batch`, `heads`, `query`, and `d_k`, but nothing under `key`, since `Q` has no such axis. `K`'s row has cells under `batch`, `heads`, `key`, and `d_k`, but nothing under `query`. The `scores` row has cells under `batch`, `heads`, `query`, and `key` — and nothing under `d_k`, since that's the one dimension that didn't make it into the output.
+<div align="center">
+  <img src="png/einsum_qkt_diagram.png" alt="einsum_qkt_diagram" style="zoom:30%;" />
+<p>Figure 9: Einsum explanation diagram</p>
+</div>
+##### 2.2.3 Preparations
+
+##### 2.2.4 Construction
 
 ## 3. Optimizer
 

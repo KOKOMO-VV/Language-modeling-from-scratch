@@ -191,7 +191,104 @@ This section is about how the building blocks prepared earlier get organized int
 </div>
 ##### 2.2.3 Preparations
 
+- **Embedding**
+
+  The input token id sequence goes through an embedding weight matrix **(vocab_size, d_model)** via a lookup: each position's token id is used as a row index to retrieve the corresponding row vector. After doing this for the whole batch, the shape changes from **(batch_size, context_length)** to **(batch_size, context_length, d_model)**.
+
+  One point worth adding here: why must every token's representation have exactly dimension dmodeld_{\text{model}} dmodel, rather than some arbitrary size? The answer lies in the residual connection. Every later layer performs
+  $$
+  x_{l+1} = x_l + F_l(x_l)
+  $$
+  and this addition requires $x_l$ and $F_l(x)$ to have identical shapes. If the embedding output's dimension didn't match the dimension used internally/output by attention and the FFN, this residual addition would be impossible from the very first layer. So d_model is really a dimension enforced consistently across the entire network by the residual connections.
+<div align="center">
+  <img src="png/embedding_lookup_diagram_v3.png" alt="embedding_lookup_diagram_v3" style="zoom:30%;" />
+<p>Figure 9: Embedding loopup diagram</p>
+</div>
+
+- **Attention (causal mask / multi-head / RoPE)**
+
+  *Causal mask*: during training the model processes the whole sequence in parallel — when computing attention for position $t$, without a mask it could directly see information from positions $\dots t+1,t+2,….$ But the training objective is precisely to predict token $t+1$ from the first  $t$ tokens; if the model can see the answer directly, this "prediction" is meaningless — the model just learns to copy rather than to predict. More importantly, this training setup would be inconsistent with real inference: at inference time, generation is autoregressive, one token at a time, and when generating token $t+1$, token $t+2$ doesn't exist yet. So the causal mask is fundamentally about making the training-time computation match the information that's actually available at inference time.
+
+  *Multi-head*: a single attention head, for a given query, can only use one fixed set of weights $W_Q, W_K, W_V$  to measure "relevance to other tokens" — all information gets compressed into one shared attention distribution. Multi-head lets the model learn hh h independent sets of $(W_Q^{(i)}, W_K^{(i)}, W_V^{(i)})$  at once, each capturing a different relational pattern in its own subspace (e.g., one head might lean toward local syntactic relationships, another toward long-range semantic ones); the $h$ heads' outputs are then concatenated and passed through a linear layer to fuse them. This is an increase in representational capacity, not a vague increase in "possibilities."
+
+  *RoPE*: the core benefit of RoPE isn't reducing the computational cost of the dot product itself (a dot product between two dd d-dimensional vectors costs $O(d)$ regardless of RoPE). Rather, it gives the dot product a special property — relative-position invariance. Specifically, if the query vector at position $m$ and the key vector at position $n$ are each rotated by an angle depending on their own position before the dot product, the result depends only on the relative distance $m−n$:
+  $$
+  \langle R_m q, R_n k \rangle = g(q, k, m-n)
+  $$
+  In other words, the rotation angle is a function of the position index — position $m$ determines how much to rotate — and this is precisely the mechanism by which positional information gets encoded into the vector itself. This way, the relative-position relationship between any two positions naturally shows up in a single dot product, without needing a separate absolute position vector added in beforehand.
+<div align="center">
+<img src="png/rope_rotation_relative_position_diagram.png" alt="rope_rotation_relative_position_diagram" style="zoom:30%;" />
+<p>Figure 10: RoPE rotation relative position diagram</p>
+</div>
+- **Norm**
+
+  Whether after attention or after the FFN, the residual connection：
+  $$
+  x_{l+1} = x_l + F_l(x_l)
+  $$
+  causes the numerical scale to keep accumulating — the addition itself does nothing to control scale. If the scale grows too large or too small across layers, it directly affects the next computation: for example, when scale is too large going into $QK⊤,$ softmax becomes very sharp (close to one-hot) and gradients nearly vanish; unstable scale also causes step-to-step update magnitudes to swing unpredictably. So before entering the next "big transformation" (attention or FFN), normalization recalibrates the scale. Take RMSNorm as an example:
+  $$
+  \text{RMS}(x) = \sqrt{\frac{1}{d}\sum_{i=1}^{d} x_i^2 + \epsilon}, \qquad \hat{x} = \frac{x}{\text{RMS}(x)} \cdot g
+  $$
+  This normalizes only over the last dimension (**d_model)**, pulling each token's own vector back into a stable scale, independent of other samples in the batch or other positions in the sequence.
+
+  One detail worth being precise about: dividing by $RMS(x)$ only fixes the ***scale*** of the vector — it forces every feature to land in roughly the same numeric range. But it says nothing about whether that particular scale is the right one for what the network needs to represent at that point. If normalization simply clamped everything to unit RMS with no way to undo or adjust that clamp, it would be actively throwing away information the model might need — some channels may need to carry more weight than others after normalization, and a fixed normalization has no way to express that.
+
+  This is what the gain parameter $g$ is for. It's a learnable vector of shape **(d_model,)**— one scalar per feature channel, not a single global scalar — that gets multiplied elementwise into the normalized output.
+
+- **FFN**
+
+  What attention does is information exchange: each token "pulls" information from other tokens based on relevance. But the way it combines that information is linear — a weighted sum — even though the weights themselves come from a nonlinear softmax, the combination operation is linear. **Stacking more attention layers alone still only produces repeated weighted averaging, with limited expressive power. What actually applies nonlinear processing to each token's own representation is the FFN**: it processes each token independently (no cross-token exchange), applying nonlinear functions like GELU, ReLU, or SwiGLU to further transform the information attention has gathered. So the division of labor — "attention exchanges, FFN processes" — is grounded in this: the exchange step is linear, and nonlinearity is introduced only in the processing step.
+
+- **Layer stacking**
+
+  A sufficiently wide single block does have more capacity, but more capacity isn't the same as replicating what multiple layers provide. The key with depth is progressiveness: after the first layer's information exchange and nonlinear processing, the second layer performs another round of exchange and processing on top of what the first layer already produced — **this** **layer-by-layer progression creates far more complex indirect information propagation paths than simply going wider ever could.** And the reason such deep stacking can still be trained comes down to the residual connection:
+
+  $$
+  x_{l+1} = x_l + F_l(x_l)
+  $$
+  This identity path guarantees gradients can flow directly from deep layers back to shallow ones, without relying entirely on the gradient chain through $F_l$— this is the concrete, multi-layer manifestation of "mitigating vanishing gradients" discussed back in section 2.1.
+<div align="center">
+  <img src="png/ffn_and_layer_depth_diagram.png" alt="ffn_and_layer_depth_diagram" style="zoom:30%;" />
+<p>Figure 11: FFN and Layer_depth diagram</p>
+</div>
+- **Final output**
+
+  The model's last layer outputs logits, not yet a probability distribution — softmax is needed to convert them. There are two reasons for this, both necessary:
+
+  First, if only the highest-probability token (argmax) were output, a lot of information would be discarded — the model's confidence in, say, the second-most-likely token would be completely invisible.
+
+  Second, and more fundamentally: the cross-entropy loss used in training needs gradients with respect to the probability over the entire vocabulary, and argmax is non-differentiable — it simply can't be backpropagated through. Only after converting to a softmax probability distribution can the loss function produce a gradient signal for every logit.
+
+  This is also why temperature and top-p sampling at inference time (which you implemented yourself in `decoding.py`) both require the full probability distribution — both strategies need to see the shape of the entire distribution, not just the single highest value.
+
 ##### 2.2.4 Construction
+
+Preparation has already explained why each component is designed the way it is. Construction's job is only to show the order and wiring by which these components are assembled into a complete model — the focus is on structure and how shapes flow, not on re-explaining the mechanisms themselves. The whole process maps naturally onto three steps, corresponding to your three levels of classes, from smallest to largest.
+
+- **Step 1: TransformerBlock — wiring four components into one layer**
+
+  TransformerBlock's input and output share the same shape,**(batch_size, context_length, d_model)** — it never changes the number of tokens or each token's vector dimension, only reworks the content of that vector.
+
+  The internal wiring is a fixed two-stage pattern, and both stages normalize before entering the sublayer (pre-norm), then add the sublayer's output back to the original input (residual):
+  $$
+  x′=x+Attention(RMSNorm1(x))
+  $$
+  The first stage handles the attention sublayer: the input $x$ is first normalized by `norm1`, then passed into causal multi-head self-attention for information exchange, and the exchanged result is added back to the original $x$ via the residual connection, giving the intermediate result $x′$ .The second stage is structurally symmetric, just with the sublayer swapped for FFN (SwiGLU): $x′$ is normalized by `norm2`, passed into the FFN for nonlinear processing, and the result is added back to $x′$ via the residual connection to produce this layer's final output.
+
+  The two norms here are not the same instance — they're independent `RMSnorm` parameters, corresponding to the two separate rescaling steps Preparation described: one before entering attention, one before entering the FFN. Each learns its own gain parameter, with no sharing between them.
+
+- **Step 2: TransformerLM body — stacking the same block via a loop**
+
+  This step's input is the raw token_ids, shape **(batch_size, context_length)**. The first thing that happens is an Embedding lookup, turning it into **(batch_size, context_length, d_model)** — the details of this step were already covered in Preparation's embedding subsection and its accompanying diagram; here it's simply the output being carried forward.
+
+  After that comes an explicit loop: the TransformerBlock assembled in Step 1 is instantiated `num_layers` times and stored in an `nn.ModuleList`, and at forward time each layer is called in sequence — each layer's output becomes directly the next layer's input. Throughout this stacking, the tensor shape stays fixed at **(batch_size, context_length, d_model)**— what changes is only the information carried inside the vectors, not their shape. This echoes exactly what the earlier "FFN and layer depth" section argued: going deeper doesn't change shape or dimension, it deepens the level of abstraction at which information is organized.
+
+- **Step 3: Output head — from hidden states to logits**
+
+  After Step 2's stacking, what comes out is still a hidden state of shape **(batch_size, context_length, d_model)**— not yet usable as a prediction. This step first applies `ln_final` for one final rescaling — echoing the principle from Preparation that scale needs to be recalibrated before entering the next "big transformation," which here is the upcoming output projection.
+
+  After that recalibration, the result is passed into `lm_head` (a Linear layer) for a dimension projection, turning the last dimension from dmodeld_{\text{model}} dmodel into **vocab_size**, giving logits of shape **(batch_size,context_length,vocab_size).** The output here is logits rather than a probability distribution, for the reasons already argued in Preparation's "final output" subsection (the full distribution is needed for cross-entropy gradients, and later for temperature/top-p sampling) — Construction here is only marking the exact step where these logits are produced.
 
 ## 3. Optimizer
 

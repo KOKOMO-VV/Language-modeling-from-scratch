@@ -107,12 +107,14 @@ This section is about how the building blocks prepared earlier get organized int
 <img src="png/rnn_vs_transformer_comparison.png" alt="rnn_vs_transformer_comparison" style="zoom:30%;" />
 <p>Figure 4: RNN vs Transformer comparison</p>
 </div>
+
 #### 2.2 Steps to build a Transformer
 
 <div align="center">
 <img src="png/transformer_architecture_two_figures.png" alt="transformer_architecture_two_figures" style="zoom:30%;" />
 <p>Figure 5: Transformer architecture & A pre-norm Transformer block</p>
 </div>
+
 ##### 2.2.1 Questions before starting
 
 - **On Embedding**
@@ -163,6 +165,7 @@ This section is about how the building blocks prepared earlier get organized int
   <img src="png/rmsnorm_shape_broadcast_diagram.png" alt="rmsnorm_shape_broadcast_diagram" style="zoom:30%;" />
 <p>Figure 8: RMSNorm shape broadcast diagram</p>
 </div>
+
 - **Matrix / tensor multiplication**
 
   `einsum` isn't something PyTorch invented — it comes from Einstein summation notation, and NumPy, native PyTorch (`torch.einsum`), and the `einops` library each provide their own implementation. Here we're using `einops`'s version, whose main difference from PyTorch's native one is readability: the native version labels dimensions with single letters (e.g. `"bhqd,bhkd->bhqk"`), while `einops` lets you label each dimension with a meaningful name instead (e.g. `"batch heads query d_k, batch heads key d_k -> batch heads query key"`), so you're not forced to keep a mental lookup table of what each letter means.
@@ -190,6 +193,7 @@ This section is about how the building blocks prepared earlier get organized int
   <img src="png/einsum_qkt_diagram.png" alt="einsum_qkt_diagram" style="zoom:30%;" />
 <p>Figure 9: Einsum explanation diagram</p>
 </div>
+
 ##### 2.2.3 Preparations
 
 - **Embedding**
@@ -235,6 +239,7 @@ This section is about how the building blocks prepared earlier get organized int
 <img src="png/rope_rotation_relative_position_diagram.png" alt="rope_rotation_relative_position_diagram" style="zoom:30%;" />
 <p>Figure 10: RoPE rotation relative position diagram</p>
 </div>
+
 - **Norm**
 
   Whether after attention or after the FFN, the residual connection：
@@ -267,6 +272,7 @@ This section is about how the building blocks prepared earlier get organized int
   <img src="png/ffn_and_layer_depth_diagram.png" alt="ffn_and_layer_depth_diagram" style="zoom:30%;" />
 <p>Figure 11: FFN and Layer_depth diagram</p>
 </div>
+
 - **Final output**
 
   The model's last layer outputs logits, not yet a probability distribution — softmax is needed to convert them. There are two reasons for this, both necessary:

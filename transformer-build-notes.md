@@ -108,6 +108,7 @@ This section is about how the building blocks prepared earlier get organized int
 <p>Figure 4: RNN vs Transformer comparison</p>
 </div>
 #### 2.2 Steps to build a Transformer
+
 <div align="center">
 <img src="png/transformer_architecture_two_figures.png" alt="transformer_architecture_two_figures" style="zoom:30%;" />
 <p>Figure 5: Transformer architecture & A pre-norm Transformer block</p>
@@ -209,13 +210,27 @@ This section is about how the building blocks prepared earlier get organized int
 
   *Causal mask*: during training the model processes the whole sequence in parallel — when computing attention for position $t$, without a mask it could directly see information from positions $\dots t+1,t+2,….$ But the training objective is precisely to predict token $t+1$ from the first  $t$ tokens; if the model can see the answer directly, this "prediction" is meaningless — the model just learns to copy rather than to predict. More importantly, this training setup would be inconsistent with real inference: at inference time, generation is autoregressive, one token at a time, and when generating token $t+1$, token $t+2$ doesn't exist yet. So the causal mask is fundamentally about making the training-time computation match the information that's actually available at inference time.
 
-  *Multi-head*: a single attention head, for a given query, can only use one fixed set of weights $W_Q, W_K, W_V$  to measure "relevance to other tokens" — all information gets compressed into one shared attention distribution. Multi-head lets the model learn hh h independent sets of $(W_Q^{(i)}, W_K^{(i)}, W_V^{(i)})$  at once, each capturing a different relational pattern in its own subspace (e.g., one head might lean toward local syntactic relationships, another toward long-range semantic ones); the $h$ heads' outputs are then concatenated and passed through a linear layer to fuse them. This is an increase in representational capacity, not a vague increase in "possibilities."
+  *Multi-head*: a single attention head, for a given query, can only use one fixed set of weights $W_Q, W_K, W_V$  to measure "relevance to other tokens" — all information gets compressed into one shared attention distribution. Multi-head lets the model learn $h$ independent sets of $(W_Q^{(i)}, W_K^{(i)}, W_V^{(i)})$  at once, each capturing a different relational pattern in its own subspace (e.g., one head might lean toward local syntactic relationships, another toward long-range semantic ones); the $h$ heads' outputs are then concatenated and passed through a linear layer to fuse them. This is an increase in representational capacity, not a vague increase in "possibilities."
 
   *RoPE*: the core benefit of RoPE isn't reducing the computational cost of the dot product itself (a dot product between two dd d-dimensional vectors costs $O(d)$ regardless of RoPE). Rather, it gives the dot product a special property — relative-position invariance. Specifically, if the query vector at position $m$ and the key vector at position $n$ are each rotated by an angle depending on their own position before the dot product, the result depends only on the relative distance $m−n$:
   $$
   \langle R_m q, R_n k \rangle = g(q, k, m-n)
   $$
-  In other words, the rotation angle is a function of the position index — position $m$ determines how much to rotate — and this is precisely the mechanism by which positional information gets encoded into the vector itself. This way, the relative-position relationship between any two positions naturally shows up in a single dot product, without needing a separate absolute position vector added in beforehand.
+  **1. Why rotation is necessary at all (rather than any constant or non-varying operation)**
+  
+  Attention's core operation is $Q\cdot K$, and for this dot product to depend only on the relative distance $n−m$, the transformations applied to $q$ and $k$ must each be tied to their own absolute position, and combining them must reduce cleanly to something involving only $n−m$. Rotation matrices happen to have exactly this algebraic property:
+  $$
+  R(-m\theta)\,R(n\theta) = R\big((n-m)\theta\big)
+  $$
+  **2. Why the vector is split into pairs of two**
+  
+  Rotation is inherently a planar (2-D) concept — "how far something has turned" can't even be defined without two coordinates; a single number has no notion of rotation. So to rotate a $d_k$ dimensional vector, the only way is to decompose it into a set of independent 2-D planes and rotate within each one. Pairing dimensions two at a time — rather than three, four, or some other grouping — is the simplest possible rotation unit.
+  
+  **3. Why each pair, once grouped, still needs a different angle**
+  
+  If all $d_k/2$ pairs shared the same angle (theta $θ$), the vector would effectively have only one "clock hand." A fast hand (large $θ$) can finely distinguish nearby positions, but wraps back to its starting angle after a few turns, so it can't tell far-apart positions apart (aliasing). A slow hand can't alias over long distances, but barely moves between nearby positions, so it can't resolve fine-grained local differences. Any single frequency forces a trade-off between near-range precision and far-range uniqueness.
+  
+  Giving the $d_k/2$ pairs a whole spectrum of frequencies (decaying geometrically from $θ_1=1$ down to $θ_{d_k/2}≈1/base$) is like equipping the vector with several hands of different speeds at once — the way a clock needs a second hand, minute hand, and hour hand together to represent a moment precisely to the second across a much longer span than any single hand could cover alone. Since the final dot product is a sum of each pair's independent contribution (shown earlier), it can then draw on both "fine-grained but periodically repeating" and "coarse-grained but never repeating" information at the same time — together encoding the relative distance between any two positions uniquely and precisely across the full sequence length.
 <div align="center">
 <img src="png/rope_rotation_relative_position_diagram.png" alt="rope_rotation_relative_position_diagram" style="zoom:30%;" />
 <p>Figure 10: RoPE rotation relative position diagram</p>
@@ -274,7 +289,7 @@ Preparation has already explained why each component is designed the way it is. 
   $$
   x′=x+Attention(RMSNorm1(x))
   $$
-  The first stage handles the attention sublayer: the input $x$ is first normalized by `norm1`, then passed into causal multi-head self-attention for information exchange, and the exchanged result is added back to the original $x$ via the residual connection, giving the intermediate result $x′$ .The second stage is structurally symmetric, just with the sublayer swapped for FFN (SwiGLU): $x′$ is normalized by `norm2`, passed into the FFN for nonlinear processing, and the result is added back to $x′$ via the residual connection to produce this layer's final output.
+  The first stage handles the attention sublayer: the input $x$ is first normalized by `norm1`, then passed into causal multi-head self-attention for information exchange, and the exchanged result is added back to the original $x$ via the residual connection, giving the intermediate result $x′$ .The second stage is structurally symmetric, just with the sublayer swapped for FFN (SwiGLU): $x′$ is normalized by `norm2`, passed into the **FFN** for nonlinear processing, and the result is added back to $x′$ via the residual connection to produce this layer's final output.
 
   The two norms here are not the same instance — they're independent `RMSnorm` parameters, corresponding to the two separate rescaling steps Preparation described: one before entering attention, one before entering the FFN. Each learns its own gain parameter, with no sharing between them.
 
@@ -288,7 +303,113 @@ Preparation has already explained why each component is designed the way it is. 
 
   After Step 2's stacking, what comes out is still a hidden state of shape **(batch_size, context_length, d_model)**— not yet usable as a prediction. This step first applies `ln_final` for one final rescaling — echoing the principle from Preparation that scale needs to be recalibrated before entering the next "big transformation," which here is the upcoming output projection.
 
-  After that recalibration, the result is passed into `lm_head` (a Linear layer) for a dimension projection, turning the last dimension from dmodeld_{\text{model}} dmodel into **vocab_size**, giving logits of shape **(batch_size,context_length,vocab_size).** The output here is logits rather than a probability distribution, for the reasons already argued in Preparation's "final output" subsection (the full distribution is needed for cross-entropy gradients, and later for temperature/top-p sampling) — Construction here is only marking the exact step where these logits are produced.
+  After that recalibration, the result is passed into `lm_head` (a Linear layer) for a dimension projection, turning the last dimension from **d_model** into **vocab_size**, giving logits of shape **(batch_size,context_length,vocab_size).** The output here is logits rather than a probability distribution, for the reasons already argued in Preparation's "final output" subsection (the full distribution is needed for cross-entropy gradients, and later for temperature/top-p sampling) — Construction here is only marking the exact step where these logits are produced.
 
 ## 3. Optimizer
+
+#### 3.1 Why do we need Optimizer
+
+##### 3.1.1 Background
+
+Training a neural network is, at its core, solving an optimization problem: given a loss function $L(\theta)$ (e.g., cross-entropy over the training set), we want to find parameters $θ$ that make $L(\theta)$ as small as possible. Here $θ$ is often a vector with millions or even billions of dimensions — there's no way to visualize what the loss surface looks like at that dimensionality, let alone solve for the optimum directly the way you'd solve a simple equation. The only feasible approach is to start from a random initial point and repeatedly nudge it toward lower loss using some iterative rule.
+
+Gradient descent is the most basic such rule: at each step, compute the gradient $\nabla L(\theta)$ at the current parameters (which points in the direction of steepest increase in loss), then move a small step in the opposite direction:
+$$
+\theta \leftarrow \theta - \eta \nabla L(\theta)
+$$
+where $\eta$ is the learning rate, controlling how far each step moves. In practice, though, computing $\nabla L(\theta)$ exactly requires passing over the entire training set, which is too expensive — so what's actually done is to estimate the gradient using a randomly sampled mini-batch at each step. This is Stochastic Gradient Descent (SGD): each step is far cheaper, but the price is that the gradient used at every step is no longer the true gradient, only a noisy estimate of it. These two properties — "the surface is too complex to solve directly" and "every step's gradient is noisy" — are exactly the roots of the two problems SGD runs into next.
+
+##### 3.1.2 Problems with SGD
+
+- **Problem 1: a single, uniform learning rate doesn't match the actual shape of the loss surface.** The loss surface can be far steeper in some directions than others — in some directions, a tiny change in a parameter causes a huge change in loss; in others, the parameter can move a lot with almost no effect. SGD applies the same learning rate $\eta$  to every parameter and every direction, which creates a dilemma: set $\eta$ large enough and steep directions overshoot and oscillate; set it small enough to be stable in steep directions and progress in flat directions crawls painfully slowly. This is the classic "ravine" problem — picture a long, narrow valley, where gradient descent keeps bouncing back and forth across the narrow width while barely advancing along the valley's length.
+- **Problem 2: gradient noise from mini-batching.** Because each step only estimates the gradient from a small batch of data, this estimate always deviates somewhat from the true gradient — a different batch could easily produce a noticeably different direction. Stepping directly along this noisy gradient every time makes the trajectory jittery and unstable: on average the direction is roughly right, but a lot of the "movement" is wasted canceling out this noise rather than making genuine progress toward lower loss, which slows convergence and makes training prone to instability if the learning rate is pushed up.
+
+##### 3.1.3 Adaptive learning by AdamW
+
+- **Part 1: responding directly to the two problems above.**
+
+  To address Problem 2 (gradient noise), introduce a first-moment estimate — an exponential moving average of past gradients:
+  $$
+  m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t
+  $$
+  **$m_t$ aggregates information from many past steps** rather than looking only at the current one, which naturally averages out noise fluctuations, **letting the actual update direction track the true underlying trend** rather than being jerked around by whatever noise happened to show up in one particular mini-batch.
+
+  To address Problem 1 (a uniform learning rate mismatched to the surface's shape), introduce a second-moment estimate — an exponential moving average of squared gradients:
+  $$
+  v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2
+  $$
+  **$v_t$ effectively tracks how large each parameter's gradients have historically been**. Dividing the update by $\sqrt{v_t}$ gives every parameter its own adaptive learning rate: a parameter whose gradients have historically been large (a steep direction) gets divided by a larger $\sqrt{v_t}$, shrinking its effective step so it's less likely to overshoot; a parameter whose gradients have historically been small (a flat direction) gets divided by a smaller $\sqrt{v_t}$, enlarging its effective step so it moves faster. This directly resolves the ravine problem, without needing to hand-tune a separate learning rate for every parameter.
+
+  Combining both  gives Adam's update rule:
+  $$
+  \theta \leftarrow \theta - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
+  $$
+  
+
+- **Part 2: a new problem introduced by adaptive scaling, and AdamW's fix.**
+
+  This part isn't solving a problem with SGD — it's solving a side effect that the adaptive-scaling machinery above introduces on its own. In plain SGD, L2 regularization (adding a $\frac{\lambda}{2}\|\theta\|^2$  term to the loss) and weight decay (directly shrinking parameters each step, $\theta \leftarrow (1-\eta\lambda)\theta$ are mathematically identical — the gradient contribution from L2, $\lambda\theta$, is just scaled by the same uniform learning rate $\eta$ as the rest of the gradient, so both formulations end up equivalent.
+
+  But once $\sqrt{\hat{v}_t}$ enters the picture as a per-parameter adaptive scale, this equivalence breaks: if $\lambda\theta$ is still folded into the gradient before this scaling, it too gets divided by $\sqrt{\hat{v}_t}$ — a parameter with a history of large gradients ends up with its weight decay weakened, while a parameter with a history of small gradients ends up with its weight decay relatively amplified. This completely undermines what weight decay is supposed to do (shrink every parameter by the same proportion, regardless of its gradient history) — it's an unintended side effect of mixing L2 regularization into an adaptively-scaled gradient, and it has nothing to do with SGD itself.
+
+  AdamW's fix is to strip weight decay out of the adaptive update entirely, applying it as its own separate, direct shrinkage step that never passes through $\sqrt{\hat{v}_t}$ :
+  $$
+  \theta \leftarrow \theta - \eta\lambda\theta - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
+  $$
+  This restores weight decay's original intent — a uniform proportional shrinkage applied to every parameter regardless of its gradient history — and this decoupling is exactly what the "W" in AdamW (decoupled Weight decay) refers to.
+
+#### 3.2 Steps to build an Optimizer
+
+Section 3.1 already covered why this machinery is needed and why each formula is designed the way it is. This section answers a different question: in what order, and using what data structures, do these formulas actually get translated into code that runs correctly and keeps working across an entire training run.
+
+##### 3.2.1 Fitting into PyTorch's Optimizer interface
+
+A custom optimizer needs to subclass `torch.optim.Optimizer`, and the base class imposes two conventions on its subclasses that must be satisfied before any update logic can be written.
+
+The first is that `__init__` must hand the parameter list and this optimizer's default hyperparameters (learning rate, β1,β2\beta_1, \beta_2 β1,β2, ϵ\epsilon ϵ, weight decay coefficient) to the parent class's `__init__`. Once the parent has this information, it automatically builds `self.param_groups` — a list whose elements are each a dictionary holding both the parameters to update for that group (`"params"`) and the hyperparameter values that apply to it. If you simply pass in `model.parameters()`, all parameters land in a single group sharing one set of hyperparameters; if different layers need different learning rates, they can be split into multiple groups when constructing the optimizer — but this flexibility comes free from the parent class and doesn't need to be implemented by the subclass.
+
+The second convention is that the subclass must implement its own `step()` method, which iterates over `self.param_groups` and applies the actual update logic to every parameter in every group. It's only from this point on that AdamW's own algorithm actually comes into play.
+
+##### **3.2.2 How state survives across multiple calls to step()**
+
+mtm_t mt and vtv_t vt, the two running averages, along with the step counter tt t, cannot be recomputed from scratch on every call to `step()` — their entire purpose is to keep accumulating information from every past step, so there has to be somewhere these values persist between two consecutive calls to `step()` (i.e., between consecutive batches in the training loop).
+
+`self.state` is exactly that place, and again it's provided by the parent class: it's a dictionary keyed by the parameter objects themselves, where `self.state[p]` holds that specific parameter's own $m$, $v$, and $t$. Because `self.state` is an attribute of the optimizer instance, and that instance stays alive for the entire training run, whatever is stored there persists — it doesn't get cleared just because one call to `step()` has finished.
+
+The actual reading and writing follows a fixed "read the old value, compute the new value, write it back" pattern: at the start of every `step()` call, the $m, v, t$ left over from last time are first read out of `self.state[p]` (or, if this is the parameter's very first update, the initial value of 0 is used since nothing has been stored yet); after computing this step's new $m, v, t,$ they must be explicitly written back into `self.state[p]` so the next call to `step()` can pick up exactly where this one left off. Skip that write-back step, and `self.state` stays empty forever — $m$ and $v$ can never actually accumulate.
+
+##### **3.2.3 The exact order of operations within a single update**
+
+Once a parameter's current gradient gtg_t gt (i.e., `p.grad`) and the $m_{t-1}, v_{t-1},$  left from the previous step are in hand, a single update has to proceed in a fixed order, where each step depends on the result of the one before it.
+
+- **Step one: update the first and second moments:**
+
+  
+  $$
+  m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t, \qquad v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2
+  $$
+
+- **Step two: bias-correct $m_t$ and $v_t$**:
+
+  since initializing $m_0=v_0=0$ makes these estimates systematically too small early in training:
+
+  
+  $$
+  \hat{m}_t = \frac{m_t}{1-\beta_1^t}, \qquad \hat{v}_t = \frac{v_t}{1-\beta_2^t}
+  $$
+  This step depends on the $m_t, v_t$ just computed in step one, and also on the current step count $t$, so it has to come after mm m and $v$ are updated.
+
+- **Step three: apply weight decay and the adaptive update to the parameter,** **as two independent shrinkage terms added together:**
+
+  
+  $$
+  \theta \leftarrow \theta - \eta\lambda\theta - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
+  $$
+  This step modifies `p.data` directly, rather than `p` itself, so that this parameter update isn't recorded into the autograd graph.
+
+- **Step four: write this step's $m_t, v_t,$ and the incremented $t$ back into `self.state[p]`, in preparation for the next call to `step()`** :
+
+  this step is easy to overlook, but it's exactly what makes the whole running-average mechanism actually take effect across steps, rather than restarting from zero every time.
+
+  The four steps must run in this exact order because each one consumes the output of the one before it: only after $m$ and $v$ are updated can bias correction happen; only after correction can the actual update magnitude be computed; only after the parameter is updated should the new state finally be saved, ready for the next round.
 

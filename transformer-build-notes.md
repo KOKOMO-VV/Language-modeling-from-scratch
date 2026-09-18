@@ -201,9 +201,9 @@ This section is about how the building blocks prepared earlier get organized int
   The input token id sequence goes through an embedding weight matrix **(vocab_size, d_model)** via a lookup: each position's token id is used as a row index to retrieve the corresponding row vector. After doing this for the whole batch, the shape changes from **(batch_size, context_length)** to **(batch_size, context_length, d_model)**.
 
   One point worth adding here: why must every token's representation have exactly dimension dmodeld_{\text{model}} dmodel, rather than some arbitrary size? The answer lies in the residual connection. Every later layer performs
-  $$
+  ```math
   x_{l+1} = x_l + F_l(x_l)
-  $$
+  ```
   and this addition requires $x_l$ and $F_l(x)$ to have identical shapes. If the embedding output's dimension didn't match the dimension used internally/output by attention and the FFN, this residual addition would be impossible from the very first layer. So d_model is really a dimension enforced consistently across the entire network by the residual connections.
 <div align="center">
   <img src="png/embedding_lookup_diagram_v3.png" alt="embedding_lookup_diagram_v3" style="zoom:30%;" />
@@ -217,15 +217,15 @@ This section is about how the building blocks prepared earlier get organized int
   *Multi-head*: a single attention head, for a given query, can only use one fixed set of weights $W_Q, W_K, W_V$  to measure "relevance to other tokens" — all information gets compressed into one shared attention distribution. Multi-head lets the model learn $h$ independent sets of $(W_Q^{(i)}, W_K^{(i)}, W_V^{(i)})$  at once, each capturing a different relational pattern in its own subspace (e.g., one head might lean toward local syntactic relationships, another toward long-range semantic ones); the $h$ heads' outputs are then concatenated and passed through a linear layer to fuse them. This is an increase in representational capacity, not a vague increase in "possibilities."
 
   *RoPE*: the core benefit of RoPE isn't reducing the computational cost of the dot product itself (a dot product between two dd d-dimensional vectors costs $O(d)$ regardless of RoPE). Rather, it gives the dot product a special property — relative-position invariance. Specifically, if the query vector at position $m$ and the key vector at position $n$ are each rotated by an angle depending on their own position before the dot product, the result depends only on the relative distance $m−n$:
-  $$
+  ```math
   \langle R_m q, R_n k \rangle = g(q, k, m-n)
-  $$
+  ```
   **1. Why rotation is necessary at all (rather than any constant or non-varying operation)**
   
   Attention's core operation is $Q\cdot K$, and for this dot product to depend only on the relative distance $n−m$, the transformations applied to $q$ and $k$ must each be tied to their own absolute position, and combining them must reduce cleanly to something involving only $n−m$. Rotation matrices happen to have exactly this algebraic property:
-  $$
+  ```math
   R(-m\theta)\,R(n\theta) = R\big((n-m)\theta\big)
-  $$
+  ```
   **2. Why the vector is split into pairs of two**
   
   Rotation is inherently a planar (2-D) concept — "how far something has turned" can't even be defined without two coordinates; a single number has no notion of rotation. So to rotate a $d_k$ dimensional vector, the only way is to decompose it into a set of independent 2-D planes and rotate within each one. Pairing dimensions two at a time — rather than three, four, or some other grouping — is the simplest possible rotation unit.
@@ -243,13 +243,13 @@ This section is about how the building blocks prepared earlier get organized int
 - **Norm**
 
   Whether after attention or after the FFN, the residual connection：
-  $$
+  ```math
   x_{l+1} = x_l + F_l(x_l)
-  $$
+  ```
   causes the numerical scale to keep accumulating — the addition itself does nothing to control scale. If the scale grows too large or too small across layers, it directly affects the next computation: for example, when scale is too large going into $QK⊤,$ softmax becomes very sharp (close to one-hot) and gradients nearly vanish; unstable scale also causes step-to-step update magnitudes to swing unpredictably. So before entering the next "big transformation" (attention or FFN), normalization recalibrates the scale. Take RMSNorm as an example:
-  $$
+  ```math
   \text{RMS}(x) = \sqrt{\frac{1}{d}\sum_{i=1}^{d} x_i^2 + \epsilon}, \qquad \hat{x} = \frac{x}{\text{RMS}(x)} \cdot g
-  $$
+  ```
   This normalizes only over the last dimension (**d_model)**, pulling each token's own vector back into a stable scale, independent of other samples in the batch or other positions in the sequence.
 
   One detail worth being precise about: dividing by $RMS(x)$ only fixes the ***scale*** of the vector — it forces every feature to land in roughly the same numeric range. But it says nothing about whether that particular scale is the right one for what the network needs to represent at that point. If normalization simply clamped everything to unit RMS with no way to undo or adjust that clamp, it would be actively throwing away information the model might need — some channels may need to carry more weight than others after normalization, and a fixed normalization has no way to express that.
@@ -264,9 +264,9 @@ This section is about how the building blocks prepared earlier get organized int
 
   A sufficiently wide single block does have more capacity, but more capacity isn't the same as replicating what multiple layers provide. The key with depth is progressiveness: after the first layer's information exchange and nonlinear processing, the second layer performs another round of exchange and processing on top of what the first layer already produced — **this** **layer-by-layer progression creates far more complex indirect information propagation paths than simply going wider ever could.** And the reason such deep stacking can still be trained comes down to the residual connection:
 
-  $$
+  ```math
   x_{l+1} = x_l + F_l(x_l)
-  $$
+  ```
   This identity path guarantees gradients can flow directly from deep layers back to shallow ones, without relying entirely on the gradient chain through $F_l$— this is the concrete, multi-layer manifestation of "mitigating vanishing gradients" discussed back in section 2.1.
 <div align="center">
   <img src="png/ffn_and_layer_depth_diagram.png" alt="ffn_and_layer_depth_diagram" style="zoom:30%;" />
@@ -292,9 +292,9 @@ Preparation has already explained why each component is designed the way it is. 
   TransformerBlock's input and output share the same shape,**(batch_size, context_length, d_model)** — it never changes the number of tokens or each token's vector dimension, only reworks the content of that vector.
 
   The internal wiring is a fixed two-stage pattern, and both stages normalize before entering the sublayer (pre-norm), then add the sublayer's output back to the original input (residual):
-  $$
+  ```math
   x′=x+Attention(RMSNorm1(x))
-  $$
+  ```
   The first stage handles the attention sublayer: the input $x$ is first normalized by `norm1`, then passed into causal multi-head self-attention for information exchange, and the exchanged result is added back to the original $x$ via the residual connection, giving the intermediate result $x′$ .The second stage is structurally symmetric, just with the sublayer swapped for FFN (SwiGLU): $x′$ is normalized by `norm2`, passed into the **FFN** for nonlinear processing, and the result is added back to $x′$ via the residual connection to produce this layer's final output.
 
   The two norms here are not the same instance — they're independent `RMSnorm` parameters, corresponding to the two separate rescaling steps Preparation described: one before entering attention, one before entering the FFN. Each learns its own gain parameter, with no sharing between them.
@@ -320,9 +320,9 @@ Preparation has already explained why each component is designed the way it is. 
 Training a neural network is, at its core, solving an optimization problem: given a loss function $L(\theta)$ (e.g., cross-entropy over the training set), we want to find parameters $θ$ that make $L(\theta)$ as small as possible. Here $θ$ is often a vector with millions or even billions of dimensions — there's no way to visualize what the loss surface looks like at that dimensionality, let alone solve for the optimum directly the way you'd solve a simple equation. The only feasible approach is to start from a random initial point and repeatedly nudge it toward lower loss using some iterative rule.
 
 Gradient descent is the most basic such rule: at each step, compute the gradient $\nabla L(\theta)$ at the current parameters (which points in the direction of steepest increase in loss), then move a small step in the opposite direction:
-$$
+```math
 \theta \leftarrow \theta - \eta \nabla L(\theta)
-$$
+```
 where $\eta$ is the learning rate, controlling how far each step moves. In practice, though, computing $\nabla L(\theta)$ exactly requires passing over the entire training set, which is too expensive — so what's actually done is to estimate the gradient using a randomly sampled mini-batch at each step. This is Stochastic Gradient Descent (SGD): each step is far cheaper, but the price is that the gradient used at every step is no longer the true gradient, only a noisy estimate of it. These two properties — "the surface is too complex to solve directly" and "every step's gradient is noisy" — are exactly the roots of the two problems SGD runs into next.
 
 ##### 3.1.2 Problems with SGD
@@ -335,21 +335,21 @@ where $\eta$ is the learning rate, controlling how far each step moves. In pract
 - **Part 1: responding directly to the two problems above.**
 
   To address Problem 2 (gradient noise), introduce a first-moment estimate — an exponential moving average of past gradients:
-  $$
+  ```math
   m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t
-  $$
+  ```
   **$m_t$ aggregates information from many past steps** rather than looking only at the current one, which naturally averages out noise fluctuations, **letting the actual update direction track the true underlying trend** rather than being jerked around by whatever noise happened to show up in one particular mini-batch.
 
   To address Problem 1 (a uniform learning rate mismatched to the surface's shape), introduce a second-moment estimate — an exponential moving average of squared gradients:
-  $$
+  ```math
   v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2
-  $$
+  ```
   **$v_t$ effectively tracks how large each parameter's gradients have historically been**. Dividing the update by $\sqrt{v_t}$ gives every parameter its own adaptive learning rate: a parameter whose gradients have historically been large (a steep direction) gets divided by a larger $\sqrt{v_t}$, shrinking its effective step so it's less likely to overshoot; a parameter whose gradients have historically been small (a flat direction) gets divided by a smaller $\sqrt{v_t}$, enlarging its effective step so it moves faster. This directly resolves the ravine problem, without needing to hand-tune a separate learning rate for every parameter.
 
   Combining both  gives Adam's update rule:
-  $$
+  ```math
   \theta \leftarrow \theta - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
-  $$
+  ```
   
 
 - **Part 2: a new problem introduced by adaptive scaling, and AdamW's fix.**
@@ -359,9 +359,9 @@ where $\eta$ is the learning rate, controlling how far each step moves. In pract
   But once $\sqrt{\hat{v}_t}$ enters the picture as a per-parameter adaptive scale, this equivalence breaks: if $\lambda\theta$ is still folded into the gradient before this scaling, it too gets divided by $\sqrt{\hat{v}_t}$ — a parameter with a history of large gradients ends up with its weight decay weakened, while a parameter with a history of small gradients ends up with its weight decay relatively amplified. This completely undermines what weight decay is supposed to do (shrink every parameter by the same proportion, regardless of its gradient history) — it's an unintended side effect of mixing L2 regularization into an adaptively-scaled gradient, and it has nothing to do with SGD itself.
 
   AdamW's fix is to strip weight decay out of the adaptive update entirely, applying it as its own separate, direct shrinkage step that never passes through $\sqrt{\hat{v}_t}$ :
-  $$
+  ```math
   \theta \leftarrow \theta - \eta\lambda\theta - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
-  $$
+  ```
   This restores weight decay's original intent — a uniform proportional shrinkage applied to every parameter regardless of its gradient history — and this decoupling is exactly what the "W" in AdamW (decoupled Weight decay) refers to.
 
 #### 3.2 Steps to build an Optimizer
@@ -391,26 +391,26 @@ Once a parameter's current gradient gtg_t gt (i.e., `p.grad`) and the $m_{t-1}, 
 - **Step one: update the first and second moments:**
 
   
-  $$
+  ```math
   m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t, \qquad v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2
-  $$
+  ```
 
 - **Step two: bias-correct $m_t$ and $v_t$**:
 
   since initializing $m_0=v_0=0$ makes these estimates systematically too small early in training:
 
   
-  $$
+  ```math
   \hat{m}_t = \frac{m_t}{1-\beta_1^t}, \qquad \hat{v}_t = \frac{v_t}{1-\beta_2^t}
-  $$
+  ```
   This step depends on the $m_t, v_t$ just computed in step one, and also on the current step count $t$, so it has to come after mm m and $v$ are updated.
 
 - **Step three: apply weight decay and the adaptive update to the parameter,** **as two independent shrinkage terms added together:**
 
   
-  $$
+  ```math
   \theta \leftarrow \theta - \eta\lambda\theta - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
-  $$
+  ```
   This step modifies `p.data` directly, rather than `p` itself, so that this parameter update isn't recorded into the autograd graph.
 
 - **Step four: write this step's $m_t, v_t,$ and the incremented $t$ back into `self.state[p]`, in preparation for the next call to `step()`** :

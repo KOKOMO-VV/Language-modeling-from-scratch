@@ -49,3 +49,15 @@
    这组数据说明得特别清楚:**只要有 1 步 warmup,数据就立刻稳定下来**(std 从 119ms 掉到 0.4ms 左右),warmup=1/2/5 之间的差别几乎可以忽略。而 warmup=0 不仅波动巨大,均值也偏高了将近 40ms。
 
    原因是第一次调用会触发一堆"一次性"的初始化开销:CUDA context 初始化、cuDNN/cuBLAS 挑选最优算子实现(autotuning)、显存分配器第一次申请大块显存等等——这些都只发生在第一次,后面的调用会复用。所以不热身直接测,测到的其实是"正常计算时间 + 这些一次性开销"的混合体,数据不干净;哪怕只热身 1 步,这些开销就已经消化完了。
+
+2. ### Nsight Systems Profiling
+
+- (a) nsys 测得 forward 单独的 NVTX 区间是 33.78ms,和 Python 标准库测的 52.52ms 对不上,原因是 CPU/GPU 异步执行、forward 和 backward 标签之间没插入 synchronize(),所以 forward 标签测到的更多是 CPU 发指令的时间而非 GPU 真正算完的时间。但整个 step 的总时长(197.26ms)和 Python 测的 full 模式(192.51ms)基本吻合(差 2.5%,是 profiling 本身的开销),说明只有插了 synchronize() 的端到端总时长才可信。
+
+- (b) 排名第一的 kernel 是 cutlass::Kernel2<cutlass_80_simt_sgemm_128x256...>,是一个矩阵乘法(GEMM)kernel,整次运行(5次热身+5次测量)里累计耗时约 258ms、被调用 1440 次。因为 backward 里同样有大量矩阵乘法(对 Q/K/V/权重求梯度),所以 forward-only 和 forward+backward 一起看,占用时间最多的都是同一类 GEMM kernel。
+
+- (c) 除了矩阵乘法,multi_tensor_apply_kernel(约占 6.3%,PyTorch 用来批量更新一堆参数张量,AdamW 更新参数时会用到)和 vectorized_elementwise_kernel(约占 5~6%,处理加法、激活函数这类逐元素操作)也占了不小比例。
+
+- (d) 完整训练步(forward+backward+optimizer)相比只做 forward,矩阵乘法的时间占比会有所下降——因为 optimizer step 几乎全部由 multi_tensor_apply/elementwise 这类完全不含矩阵乘法的 kernel 组成,它拉长了总时长,但对矩阵乘法的绝对耗时没有任何贡献,相当于把矩阵乘法的占比"稀释"了。
+
+- (e) 用之前那 3 层的数据:矩阵乘法(两次加起来)耗时始终是 softmax 的 3~4 倍左右。但矩阵乘法的 FLOPs 相对 softmax 要高出好几个数量级——实际耗时的差距远小于理论计算量的差距,说明 softmax 相对它的计算量"不成比例地慢",因为它是访存密集型操作、吃不到 Tensor Core 加速,这正是 FlashAttention 要解决的问题。
